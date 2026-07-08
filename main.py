@@ -67,20 +67,24 @@ async def rate_limit(request: Request, call_next):
 
     return await call_next(request)
 
-
-@app.post("/orders", status_code=201)
-def create_order(
-    idempotency_key: str = Header(..., alias="Idempotency-Key")
-):
+@app.post("/orders")
+def create_order(idempotency_key: str = Header(..., alias="Idempotency-Key")):
     if idempotency_key in idempotency_store:
-        return idempotency_store[idempotency_key]
+        return JSONResponse(
+            status_code=200,
+            content=idempotency_store[idempotency_key]
+        )
 
     order = {
         "id": str(uuid.uuid4())
     }
 
     idempotency_store[idempotency_key] = order
-    return order
+
+    return JSONResponse(
+        status_code=201,
+        content=order
+    )
 
 
 @app.get("/orders")
