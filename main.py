@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 EMAIL = "23f2001523@ds.study.iitm.ac.in"
-ASSIGNED_ORIGIN = "https://app-yc1yo9.example.com"
+ASSIGNED_ORIGIN = "https://exam.sanand.workers.dev/"
 
 RATE_LIMIT = 10
 WINDOW = 10
