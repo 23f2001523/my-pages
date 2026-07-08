@@ -40,6 +40,10 @@ client_buckets = defaultdict(deque)
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
+    # Never rate-limit CORS preflight
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
     client = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
@@ -57,9 +61,7 @@ async def rate_limit(request: Request, call_next):
         )
 
     bucket.append(now)
-
-    response = await call_next(request)
-    return response
+    return await call_next(request)
 
 
 @app.post("/orders", status_code=201)
