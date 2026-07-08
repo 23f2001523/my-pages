@@ -1,23 +1,19 @@
+import base64
 import time
 import uuid
-import base64
 from collections import defaultdict, deque
+from typing import Optional
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import FastAPI, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# -----------------------------
-# CONFIG
-# -----------------------------
 TOTAL_ORDERS = 58
-RATE_LIMIT = 16          # requests
-WINDOW = 10              # seconds
+RATE_LIMIT = 16
+WINDOW = 10
 
-# -----------------------------
-# CORS
-# -----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,9 +22,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
 # Fixed catalog
-# -----------------------------
 ORDERS = [
     {
         "id": i,
@@ -37,87 +31,70 @@ ORDERS = [
     for i in range(1, TOTAL_ORDERS + 1)
 ]
 
-# -----------------------------
 # Idempotency storage
-# -----------------------------
-idempotency = {}
+idempotency_store = {}
 
-# -----------------------------
-# Rate limiter
-# -----------------------------
-client_requests = defaultdict(deque)
+# Rate limiting storage
+client_buckets = defaultdict(deque)
 
 
 @app.middleware("http")
-async def rate_limit(request, call_next):
-
+async def rate_limit(request: Request, call_next):
     client = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
+    bucket = client_buckets[client]
 
-    q = client_requests[client]
+    while bucket and now - bucket[0] >= WINDOW:
+        bucket.popleft()
 
-    while q and now - q[0] >= WINDOW:
-        q.popleft()
-
-    if len(q) >= RATE_LIMIT:
-
-        retry = WINDOW - (now - q[0])
-
-        return Response(
+    if len(bucket) >= RATE_LIMIT:
+        retry_after = max(1, int(WINDOW - (now - bucket[0])))
+        return JSONResponse(
             status_code=429,
-            headers={
-                "Retry-After": str(max(1, int(retry)))
-            }
+            headers={"Retry-After": str(retry_after)},
+            content={"detail": "Rate limit exceeded"},
         )
 
-    q.append(now)
+    bucket.append(now)
 
-    return await call_next(request)
+    response = await call_next(request)
+    return response
 
 
-# ---------------------------------------------------
-# POST /orders
-# ---------------------------------------------------
 @app.post("/orders", status_code=201)
-def create_order(idempotency_key: str = Header(..., alias="Idempotency-Key")):
-
-    if idempotency_key in idempotency:
-        return idempotency[idempotency_key]
+def create_order(
+    idempotency_key: str = Header(..., alias="Idempotency-Key")
+):
+    if idempotency_key in idempotency_store:
+        return idempotency_store[idempotency_key]
 
     order = {
         "id": str(uuid.uuid4())
     }
 
-    idempotency[idempotency_key] = order
-
+    idempotency_store[idempotency_key] = order
     return order
 
 
-# ---------------------------------------------------
-# GET /orders
-# ---------------------------------------------------
 @app.get("/orders")
-def list_orders(limit: int = 10, cursor: str | None = None):
-
+def list_orders(limit: int = 10, cursor: Optional[str] = None):
     start = 0
 
     if cursor:
         try:
-            start = int(base64.b64decode(cursor).decode())
+            start = int(base64.b64decode(cursor.encode()).decode())
         except Exception:
             start = 0
 
+    start = max(0, min(start, TOTAL_ORDERS))
     end = min(start + limit, TOTAL_ORDERS)
 
     items = ORDERS[start:end]
 
     next_cursor = None
-
     if end < TOTAL_ORDERS:
-        next_cursor = base64.b64encode(
-            str(end).encode()
-        ).decode()
+        next_cursor = base64.b64encode(str(end).encode()).decode()
 
     return {
         "items": items,
