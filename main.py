@@ -1,40 +1,54 @@
-from fastapi import FastAPI
-from redis import Redis
+from collections import defaultdict
+
+from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+API_KEY = "ak_i0hna5on6osrrovrisu3sh9c"
 
 app = FastAPI()
 
-# "redis" is the Docker Compose service name
-r = Redis(host="redis", port=6379, decode_responses=True)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
-@app.post("/hit/{key}")
-def hit(key: str):
-    count = r.incr(key)
+class Event(BaseModel):
+    user: str
+    amount: float
+    ts: int
+
+
+class EventBatch(BaseModel):
+    events: list[Event]
+
+
+@app.post("/analytics")
+def analytics(
+    batch: EventBatch,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+):
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    totals = defaultdict(float)
+    revenue = 0.0
+
+    for event in batch.events:
+        if event.amount > 0:
+            revenue += event.amount
+            totals[event.user] += event.amount
+
+    top_user = max(totals, key=totals.get) if totals else ""
+
     return {
-        "key": key,
-        "count": count
+        "email": "<YOUR_EMAIL>",
+        "total_events": len(batch.events),
+        "unique_users": len({e.user for e in batch.events}),
+        "revenue": revenue,
+        "top_user": top_user,
     }
-
-
-@app.get("/count/{key}")
-def count(key: str):
-    value = r.get(key)
-    return {
-        "key": key,
-        "count": int(value) if value else 0
-    }
-
-
-@app.get("/healthz")
-def health():
-    try:
-        r.ping()
-        return {
-            "status": "ok",
-            "redis": "up"
-        }
-    except Exception:
-        return {
-            "status": "error",
-            "redis": "down"
-        }
