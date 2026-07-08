@@ -1,8 +1,14 @@
+import json
 import re
+
+import requests
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 app = FastAPI()
+
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODEL = "llama3.2"
 
 
 class ExtractRequest(BaseModel):
@@ -16,12 +22,34 @@ class ExtractResponse(BaseModel):
     date: str
 
 
+PROMPT = """
+Extract these invoice fields.
+
+Return ONLY valid JSON.
+
+Schema:
+{
+  "vendor": string,
+  "amount": number,
+  "currency": "USD|EUR|GBP",
+  "date": "YYYY-MM-DD"
+}
+
+Rules:
+- vendor = company/vendor name
+- amount = total amount due
+- currency = exactly USD, EUR or GBP
+- date = payment due date in YYYY-MM-DD format
+
+Do not explain.
+Do not use markdown.
+"""
+
+
 @app.post("/extract", response_model=ExtractResponse)
 def extract(req: ExtractRequest):
 
-    text = req.text.strip()
-
-    if not text:
+    if not req.text.strip():
         return ExtractResponse(
             vendor="",
             amount=0,
@@ -29,66 +57,49 @@ def extract(req: ExtractRequest):
             date=""
         )
 
-    # Date
-    date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
-    date = date_match.group(1) if date_match else ""
+    try:
+        r = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": req.text,
+                    },
+                ],
+                "stream": False,
+            },
+            timeout=60,
+        )
 
-    # Currency
-    currency_match = re.search(r"\b(USD|EUR|GBP)\b", text, re.I)
-    currency = currency_match.group(1).upper() if currency_match else ""
+        response = r.json()
 
-    # Amount
-    amount = 0.0
+        content = response["message"]["content"].strip()
 
-    patterns = [
-        r"Total\s+Due[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
-        r"Amount\s+Due[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
-        r"Total[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
-        r"\$([0-9]+(?:\.[0-9]+)?)",
-        r"([0-9]+(?:\.[0-9]+)?)\s*(USD|EUR|GBP)"
-    ]
+        # remove ```json ... ```
+        content = re.sub(r"^```json", "", content, flags=re.I).strip()
+        content = re.sub(r"^```", "", content).strip()
+        content = re.sub(r"```$", "", content).strip()
 
-    for p in patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            amount = float(m.group(1))
-            break
+        data = json.loads(content)
 
-    # Vendor
-    vendor = ""
+        return ExtractResponse(
+            vendor=str(data.get("vendor", "")),
+            amount=float(data.get("amount", 0)),
+            currency=str(data.get("currency", "")).upper(),
+            date=str(data.get("date", "")),
+        )
 
-    vendor_patterns = [
-        r"Vendor[: ]*(.+)",
-        r"From[: ]*(.+)",
-        r"Supplier[: ]*(.+)",
-        r"Bill From[: ]*(.+)"
-    ]
-
-    for p in vendor_patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            vendor = m.group(1).split("\n")[0].strip()
-            break
-
-    # Fallback:
-    # first non-empty line that isn't obviously another field
-    if not vendor:
-        for line in text.splitlines():
-            line = line.strip()
-            if (
-                line
-                and not re.match(
-                    r"(invoice|date|due|total|amount|currency)",
-                    line,
-                    re.I,
-                )
-            ):
-                vendor = line
-                break
-
-    return ExtractResponse(
-        vendor=vendor,
-        amount=amount,
-        currency=currency,
-        date=date,
-    )
+    except Exception:
+        # Never return HTTP 500
+        return ExtractResponse(
+            vendor="",
+            amount=0,
+            currency="",
+            date=""
+        )
