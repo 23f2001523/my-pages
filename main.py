@@ -46,7 +46,7 @@ def analytics(
     top_user = max(totals, key=totals.get) if totals else ""
 
     return {
-        "email": "<YOUR_EMAIL>",
+        "email": "23f2001523@ds.study.iitm.ac.in",
         "total_events": len(batch.events),
         "unique_users": len({e.user for e in batch.events}),
         "revenue": revenue,
