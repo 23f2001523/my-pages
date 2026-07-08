@@ -18,11 +18,13 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        ASSIGNED_ORIGIN,
+        "https://app-yc1yo9.example.com",
+        "https://exam.sanand.workers.dev",
     ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 client_buckets = defaultdict(deque)
