@@ -1,105 +1,125 @@
-import json
-import re
+import time
+import uuid
+import base64
+from collections import defaultdict, deque
 
-import requests
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL = "llama3.2"
+# -----------------------------
+# CONFIG
+# -----------------------------
+TOTAL_ORDERS = 58
+RATE_LIMIT = 16          # requests
+WINDOW = 10              # seconds
+
+# -----------------------------
+# CORS
+# -----------------------------
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# -----------------------------
+# Fixed catalog
+# -----------------------------
+ORDERS = [
+    {
+        "id": i,
+        "item": f"Order {i}"
+    }
+    for i in range(1, TOTAL_ORDERS + 1)
+]
+
+# -----------------------------
+# Idempotency storage
+# -----------------------------
+idempotency = {}
+
+# -----------------------------
+# Rate limiter
+# -----------------------------
+client_requests = defaultdict(deque)
 
 
-class ExtractRequest(BaseModel):
-    text: str
+@app.middleware("http")
+async def rate_limit(request, call_next):
 
+    client = request.headers.get("X-Client-Id", "anonymous")
 
-class ExtractResponse(BaseModel):
-    vendor: str
-    amount: float
-    currency: str
-    date: str
+    now = time.time()
 
+    q = client_requests[client]
 
-PROMPT = """
-Extract these invoice fields.
+    while q and now - q[0] >= WINDOW:
+        q.popleft()
 
-Return ONLY valid JSON.
+    if len(q) >= RATE_LIMIT:
 
-Schema:
-{
-  "vendor": string,
-  "amount": number,
-  "currency": "USD|EUR|GBP",
-  "date": "YYYY-MM-DD"
-}
+        retry = WINDOW - (now - q[0])
 
-Rules:
-- vendor = company/vendor name
-- amount = total amount due
-- currency = exactly USD, EUR or GBP
-- date = payment due date in YYYY-MM-DD format
-
-Do not explain.
-Do not use markdown.
-"""
-
-
-@app.post("/extract", response_model=ExtractResponse)
-def extract(req: ExtractRequest):
-
-    if not req.text.strip():
-        return ExtractResponse(
-            vendor="",
-            amount=0,
-            currency="",
-            date=""
+        return Response(
+            status_code=429,
+            headers={
+                "Retry-After": str(max(1, int(retry)))
+            }
         )
 
-    try:
-        r = requests.post(
-            OLLAMA_URL,
-            json={
-                "model": MODEL,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": req.text,
-                    },
-                ],
-                "stream": False,
-            },
-            timeout=60,
-        )
+    q.append(now)
 
-        response = r.json()
+    return await call_next(request)
 
-        content = response["message"]["content"].strip()
 
-        # remove ```json ... ```
-        content = re.sub(r"^```json", "", content, flags=re.I).strip()
-        content = re.sub(r"^```", "", content).strip()
-        content = re.sub(r"```$", "", content).strip()
+# ---------------------------------------------------
+# POST /orders
+# ---------------------------------------------------
+@app.post("/orders", status_code=201)
+def create_order(idempotency_key: str = Header(..., alias="Idempotency-Key")):
 
-        data = json.loads(content)
+    if idempotency_key in idempotency:
+        return idempotency[idempotency_key]
 
-        return ExtractResponse(
-            vendor=str(data.get("vendor", "")),
-            amount=float(data.get("amount", 0)),
-            currency=str(data.get("currency", "")).upper(),
-            date=str(data.get("date", "")),
-        )
+    order = {
+        "id": str(uuid.uuid4())
+    }
 
-    except Exception:
-        # Never return HTTP 500
-        return ExtractResponse(
-            vendor="",
-            amount=0,
-            currency="",
-            date=""
-        )
+    idempotency[idempotency_key] = order
+
+    return order
+
+
+# ---------------------------------------------------
+# GET /orders
+# ---------------------------------------------------
+@app.get("/orders")
+def list_orders(limit: int = 10, cursor: str | None = None):
+
+    start = 0
+
+    if cursor:
+        try:
+            start = int(base64.b64decode(cursor).decode())
+        except Exception:
+            start = 0
+
+    end = min(start + limit, TOTAL_ORDERS)
+
+    items = ORDERS[start:end]
+
+    next_cursor = None
+
+    if end < TOTAL_ORDERS:
+        next_cursor = base64.b64encode(
+            str(end).encode()
+        ).decode()
+
+    return {
+        "items": items,
+        "next_cursor": next_cursor
+    }
