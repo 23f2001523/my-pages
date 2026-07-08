@@ -1,71 +1,94 @@
-from fastapi import FastAPI, Request
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
-from fastapi.responses import Response
-import time
-import uuid
-from collections import deque
+import re
+from fastapi import FastAPI
+from pydantic import BaseModel
 
 app = FastAPI()
 
-START_TIME = time.time()
 
-# Prometheus counter
-REQUEST_COUNTER = Counter(
-    "http_requests_total",
-    "Total HTTP requests"
-)
-
-# store last 1000 logs
-LOGS = deque(maxlen=1000)
+class ExtractRequest(BaseModel):
+    text: str
 
 
-@app.middleware("http")
-async def metrics_and_logs(request: Request, call_next):
-
-    REQUEST_COUNTER.inc()
-
-    request_id = str(uuid.uuid4())
-
-    LOGS.append({
-        "level": "INFO",
-        "ts": time.time(),
-        "path": request.url.path,
-        "request_id": request_id
-    })
-
-    response = await call_next(request)
-    return response
+class ExtractResponse(BaseModel):
+    vendor: str
+    amount: float
+    currency: str
+    date: str
 
 
-@app.get("/work")
-def work(n: int):
+@app.post("/extract", response_model=ExtractResponse)
+def extract(req: ExtractRequest):
 
-    # simulate work
-    for _ in range(n):
-        pass
+    text = req.text.strip()
 
-    return {
-        "email": "23f2001523@ds.study.iitm.ac.in",
-        "done": n
-    }
+    if not text:
+        return ExtractResponse(
+            vendor="",
+            amount=0,
+            currency="",
+            date=""
+        )
 
+    # Date
+    date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", text)
+    date = date_match.group(1) if date_match else ""
 
-@app.get("/metrics")
-def metrics():
-    return Response(
-        generate_latest(),
-        media_type=CONTENT_TYPE_LATEST
+    # Currency
+    currency_match = re.search(r"\b(USD|EUR|GBP)\b", text, re.I)
+    currency = currency_match.group(1).upper() if currency_match else ""
+
+    # Amount
+    amount = 0.0
+
+    patterns = [
+        r"Total\s+Due[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
+        r"Amount\s+Due[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
+        r"Total[: ]*\$?([0-9]+(?:\.[0-9]+)?)",
+        r"\$([0-9]+(?:\.[0-9]+)?)",
+        r"([0-9]+(?:\.[0-9]+)?)\s*(USD|EUR|GBP)"
+    ]
+
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            amount = float(m.group(1))
+            break
+
+    # Vendor
+    vendor = ""
+
+    vendor_patterns = [
+        r"Vendor[: ]*(.+)",
+        r"From[: ]*(.+)",
+        r"Supplier[: ]*(.+)",
+        r"Bill From[: ]*(.+)"
+    ]
+
+    for p in vendor_patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            vendor = m.group(1).split("\n")[0].strip()
+            break
+
+    # Fallback:
+    # first non-empty line that isn't obviously another field
+    if not vendor:
+        for line in text.splitlines():
+            line = line.strip()
+            if (
+                line
+                and not re.match(
+                    r"(invoice|date|due|total|amount|currency)",
+                    line,
+                    re.I,
+                )
+            ):
+                vendor = line
+                break
+
+    return ExtractResponse(
+        vendor=vendor,
+        amount=amount,
+        currency=currency,
+        date=date,
     )
-
-
-@app.get("/healthz")
-def health():
-    return {
-        "status": "ok",
-        "uptime_s": time.time() - START_TIME
-    }
-
-
-@app.get("/logs/tail")
-def logs(limit: int = 10):
-    return list(LOGS)[-limit:]
