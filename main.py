@@ -16,9 +16,9 @@ WINDOW = 10
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origin_regex=".*",
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -106,3 +106,7 @@ def list_orders(limit: int = 10, cursor: Optional[str] = None):
         "items": items,
         "next_cursor": next_cursor
     }
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
