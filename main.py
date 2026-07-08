@@ -1,6 +1,7 @@
 import base64
 import time
 import uuid
+import math
 from collections import defaultdict, deque
 from typing import Optional
 
@@ -56,7 +57,7 @@ async def rate_limit(request: Request, call_next):
         bucket.popleft()
 
     if len(bucket) >= RATE_LIMIT:
-        retry_after = max(1, int(WINDOW - (now - bucket[0])))
+        retry_after = max(1, math.ceil(WINDOW - (now - bucket[0])))
         return JSONResponse(
             status_code=429,
             headers={"Retry-After": str(retry_after)},
