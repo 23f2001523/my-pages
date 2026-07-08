@@ -1,4 +1,7 @@
 fastapi
 uvicorn
+pyjwt[crypto]
+python-dotenv
+pyyaml
+prometheus-client
 requests
-pydantic
