@@ -1,54 +1,71 @@
-from collections import defaultdict
-
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-API_KEY = "ak_i0hna5on6osrrovrisu3sh9c"
+from fastapi import FastAPI, Request
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.responses import Response
+import time
+import uuid
+from collections import deque
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+START_TIME = time.time()
+
+# Prometheus counter
+REQUEST_COUNTER = Counter(
+    "http_requests_total",
+    "Total HTTP requests"
 )
 
-
-class Event(BaseModel):
-    user: str
-    amount: float
-    ts: int
+# store last 1000 logs
+LOGS = deque(maxlen=1000)
 
 
-class EventBatch(BaseModel):
-    events: list[Event]
+@app.middleware("http")
+async def metrics_and_logs(request: Request, call_next):
+
+    REQUEST_COUNTER.inc()
+
+    request_id = str(uuid.uuid4())
+
+    LOGS.append({
+        "level": "INFO",
+        "ts": time.time(),
+        "path": request.url.path,
+        "request_id": request_id
+    })
+
+    response = await call_next(request)
+    return response
 
 
-@app.post("/analytics")
-def analytics(
-    batch: EventBatch,
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-):
-    if x_api_key != API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+@app.get("/work")
+def work(n: int):
 
-    totals = defaultdict(float)
-    revenue = 0.0
-
-    for event in batch.events:
-        if event.amount > 0:
-            revenue += event.amount
-            totals[event.user] += event.amount
-
-    top_user = max(totals, key=totals.get) if totals else ""
+    # simulate work
+    for _ in range(n):
+        pass
 
     return {
-        "email": "23f2001523@ds.study.iitm.ac.in",
-        "total_events": len(batch.events),
-        "unique_users": len({e.user for e in batch.events}),
-        "revenue": revenue,
-        "top_user": top_user,
+        "email": "<YOUR_EMAIL>",
+        "done": n
     }
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+@app.get("/healthz")
+def health():
+    return {
+        "status": "ok",
+        "uptime_s": time.time() - START_TIME
+    }
+
+
+@app.get("/logs/tail")
+def logs(limit: int = 10):
+    return list(LOGS)[-limit:]
