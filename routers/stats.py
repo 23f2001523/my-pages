@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 router = APIRouter()
 
-EMAIL = "<YOUR_EMAIL>"
+EMAIL = "23f2001523@ds.study.iitm.ac.in"
 
 
 @router.get("/stats")
